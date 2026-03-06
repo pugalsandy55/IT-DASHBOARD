@@ -35,6 +35,24 @@ Also supports export as CSV
 Design
 
 Dark and light theme toggle
+
+Quick Poll Hosting
+
+Create a quick poll directly in the dashboard with a question and options
+Generate a shareable URL (`?poll=...`) you can host and send to others
+Each visitor can vote in-browser, and results update live on the poll card
+
 Fully responsive layout
 Works on any modern browser — Chrome, Edge, Firefox, Safari
 Single HTML file, 48KB, no dependencies, no external libraries
+
+
+Hosting (serve this project)
+
+Run one of these from the repo root:
+
+- `./host.sh` (default port 4173)
+- `./host.sh 8080` (custom port)
+- `python -m http.server 4173 --bind 0.0.0.0`
+
+Then open: `http://<your-host-ip>:4173/jain-metal-dashboard-v2.html`

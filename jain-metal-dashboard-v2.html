@@ -172,6 +172,18 @@ td.cell-editing input{width:100%;height:100%;padding:0.55rem 1rem;background:tra
 .inline-edit-badge.visible{display:inline-block}
 .edit-open-btn{padding:0.4rem 1rem;background:linear-gradient(135deg,var(--accent),#a855f7);color:#fff;border:none;border-radius:6px;font-family:inherit;font-size:0.78rem;font-weight:700;cursor:pointer;transition:var(--transition);box-shadow:0 0 16px rgba(124,106,255,0.3);white-space:nowrap}
 .edit-open-btn:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(124,106,255,0.5)}
+.poll-panel{margin-bottom:1.25rem}
+.poll-builder{display:grid;grid-template-columns:1.25fr 1fr;gap:0.8rem}
+.poll-actions{display:flex;flex-wrap:wrap;gap:0.6rem;margin-top:0.8rem}
+.poll-title{font-size:1rem;font-weight:700;margin-bottom:0.2rem}
+.poll-sub{font-size:0.78rem;color:var(--text2);margin-bottom:0.85rem}
+.poll-option-list{display:flex;flex-direction:column;gap:0.55rem}
+.poll-option{display:flex;align-items:center;justify-content:space-between;gap:0.65rem;padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:8px;background:var(--surface2)}
+.poll-option button{padding:0.28rem 0.75rem;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:0.72rem;font-weight:700;cursor:pointer}
+.poll-bar{height:6px;border-radius:5px;background:var(--surface3);overflow:hidden;margin-top:0.35rem}
+.poll-bar > span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent3));min-width:2px}
+.poll-total{font-size:0.75rem;color:var(--text2)}
+@media(max-width:900px){.poll-builder{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -197,6 +209,38 @@ td.cell-editing input{width:100%;height:100%;padding:0.55rem 1rem;background:tra
       Browse Files
       <input type="file" id="fileInput" accept=".xlsx,.xls,.csv"/>
     </label>
+  </div>
+
+  <div class="panel poll-panel">
+    <div class="panel-header">
+      <div class="panel-title"><div class="dot" style="background:var(--accent2)"></div> Quick Poll</div>
+      <div class="poll-total" id="pollHostHint">Create a poll, host this page, then share the generated URL.</div>
+    </div>
+    <div class="panel-body">
+      <div class="poll-builder">
+        <div>
+          <div class="ctrl-group" style="margin-bottom:0.6rem">
+            <label class="select-label" for="pollQuestionInput">Poll question</label>
+            <input class="form-input" id="pollQuestionInput" placeholder="e.g. Which shift should handle Sunday maintenance?"/>
+          </div>
+          <div class="ctrl-group">
+            <label class="select-label" for="pollOptionsInput">Options (one per line)</label>
+            <textarea class="form-input" id="pollOptionsInput" rows="5" placeholder="Morning Shift&#10;Evening Shift&#10;Split Team"></textarea>
+          </div>
+          <div class="poll-actions">
+            <button class="export-btn" id="createPollBtn">🗳️ Create Poll</button>
+            <button class="clear-btn" id="copyPollLinkBtn">🔗 Copy Link</button>
+            <button class="clear-btn" id="clearPollVotesBtn">♻ Reset Votes</button>
+          </div>
+          <div class="poll-sub" style="margin-top:0.55rem">Host command: <code>python -m http.server 4173 --bind 0.0.0.0</code></div>
+        </div>
+        <div>
+          <div class="poll-title" id="pollQuestionView">No poll created yet</div>
+          <div class="poll-sub" id="pollShareUrl">Create a poll to generate a shareable host URL.</div>
+          <div class="poll-option-list" id="pollOptionsView"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="file-info" id="fileInfo">
@@ -900,6 +944,7 @@ let currentChartType='bar';
 let parsedWorkbook=null;
 let activeSheet='';
 let currentFileName='', currentFileSize=0;
+let activePoll=null;
 
 // ============================================================
 // THEME
@@ -1241,6 +1286,142 @@ function showToast(msg,type='success'){
   clearTimeout(toastTimer);
   toastTimer=setTimeout(()=>el.classList.remove('show'),3000);
 }
+
+// ============================================================
+// QUICK POLL (HOSTABLE WITH URL)
+// ============================================================
+function encodePollPayload(payload){
+  return btoa(JSON.stringify(payload));
+}
+function decodePollPayload(raw){
+  return JSON.parse(atob(raw));
+}
+function pollStorageKey(id){return `jmg_poll_votes_${id}`;}
+function pollIdFromData(poll){
+  return btoa(`${poll.question}|${poll.options.join('|')}`).replace(/=+$/,'').slice(0,32);
+}
+function pollShareUrl(poll){
+  const payload={question:poll.question,options:poll.options};
+  return `${location.origin}${location.pathname}?poll=${encodeURIComponent(encodePollPayload(payload))}${location.hash||''}`;
+}
+function toSafePoll(parsed){
+  const question=String(parsed.question||'').trim();
+  const options=Array.isArray(parsed.options)?parsed.options.map(o=>String(o).trim()).filter(Boolean).slice(0,12):[];
+  if(!question||options.length<2) return null;
+  return {question,options};
+}
+
+function renderPoll(){
+  const qv=document.getElementById('pollQuestionView');
+  const sv=document.getElementById('pollShareUrl');
+  const list=document.getElementById('pollOptionsView');
+  const hint=document.getElementById('pollHostHint');
+  list.innerHTML='';
+  if(!activePoll){
+    qv.textContent='No poll created yet';
+    sv.textContent='Create a poll to generate a shareable host URL.';
+    hint.textContent='Create a poll, host this page, then share the generated URL.';
+    return;
+  }
+
+  qv.textContent=activePoll.question;
+  sv.textContent=pollShareUrl(activePoll);
+  const total=activePoll.votes.reduce((a,b)=>a+b,0);
+  hint.textContent=`Total votes: ${total}`;
+
+  activePoll.options.forEach((opt,idx)=>{
+    const count=activePoll.votes[idx]||0;
+    const pct=total?Math.round((count/total)*100):0;
+    const row=document.createElement('div');
+    row.className='poll-option';
+
+    const left=document.createElement('div');
+    left.style.flex='1';
+
+    const label=document.createElement('div');
+    label.style.fontSize='0.8rem';
+    label.style.fontWeight='600';
+    label.textContent=opt;
+
+    const bar=document.createElement('div');
+    bar.className='poll-bar';
+    const barInner=document.createElement('span');
+    barInner.style.width=`${pct}%`;
+    bar.appendChild(barInner);
+
+    const meta=document.createElement('div');
+    meta.style.fontSize='0.72rem';
+    meta.style.color='var(--text2)';
+    meta.style.marginTop='0.2rem';
+    meta.textContent=`${count} vote${count===1?'':'s'} (${pct}%)`;
+
+    left.appendChild(label);
+    left.appendChild(bar);
+    left.appendChild(meta);
+
+    const voteBtn=document.createElement('button');
+    voteBtn.type='button';
+    voteBtn.textContent='Vote';
+    voteBtn.addEventListener('click',()=>{
+      activePoll.votes[idx]=(activePoll.votes[idx]||0)+1;
+      localStorage.setItem(pollStorageKey(activePoll.id),JSON.stringify(activePoll.votes));
+      renderPoll();
+      showToast('Vote submitted ✓','success');
+    });
+
+    row.appendChild(left);
+    row.appendChild(voteBtn);
+    list.appendChild(row);
+  });
+}
+
+function loadPollFromUrl(){
+  const qp=new URLSearchParams(location.search);
+  const raw=qp.get('poll');
+  if(!raw) return;
+  try{
+    const safe=toSafePoll(decodePollPayload(raw));
+    if(!safe) return;
+    safe.id=pollIdFromData(safe);
+    const stored=JSON.parse(localStorage.getItem(pollStorageKey(safe.id))||'[]');
+    safe.votes=safe.options.map((_,i)=>Math.max(0,Number(stored[i]||0)));
+    activePoll=safe;
+    renderPoll();
+  }catch(_e){
+    showToast('Invalid poll URL','error');
+  }
+}
+
+document.getElementById('createPollBtn').addEventListener('click',()=>{
+  const question=document.getElementById('pollQuestionInput').value.trim();
+  const options=document.getElementById('pollOptionsInput').value.split('\n').map(s=>s.trim()).filter(Boolean).slice(0,12);
+  if(!question){showToast('Enter a poll question','error');return;}
+  if(options.length<2){showToast('Add at least 2 options','error');return;}
+  activePoll={question,options,votes:options.map(()=>0)};
+  activePoll.id=pollIdFromData(activePoll);
+  localStorage.setItem(pollStorageKey(activePoll.id),JSON.stringify(activePoll.votes));
+  history.replaceState(null,'',pollShareUrl(activePoll));
+  renderPoll();
+  showToast('Poll created. Share the link.','success');
+});
+
+document.getElementById('copyPollLinkBtn').addEventListener('click',async()=>{
+  if(!activePoll){showToast('Create a poll first','error');return;}
+  try{
+    await navigator.clipboard.writeText(document.getElementById('pollShareUrl').textContent);
+    showToast('Poll link copied ✓','success');
+  }catch(_e){showToast('Copy failed. Copy manually from URL shown.','error');}
+});
+
+document.getElementById('clearPollVotesBtn').addEventListener('click',()=>{
+  if(!activePoll){showToast('Create a poll first','error');return;}
+  activePoll.votes=activePoll.options.map(()=>0);
+  localStorage.setItem(pollStorageKey(activePoll.id),JSON.stringify(activePoll.votes));
+  renderPoll();
+  showToast('Poll votes reset','success');
+});
+
+loadPollFromUrl();
 
 // Redraw charts on resize
 let resizeTimer;
